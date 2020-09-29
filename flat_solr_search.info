@@ -1,0 +1,7 @@
+name = "Flat Solr Search"
+description = "FLAT Module for Solr Search fixes"
+package = FLAT
+core = 7.x
+version = 7.x-0.1-dev
+configure = admin/config/flat_deposit/flat_solr_search
+dependencies[] = islandora_solr
