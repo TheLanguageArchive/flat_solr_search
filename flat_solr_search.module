@@ -1,137 +1,234 @@
 <?php
 
+/**
+ * Normalizing options for search to use solr field itself as
+ * value to be used by advanced_search
+ *
+ * @param array $options
+ *
+ * @return array
+ */
 function flat_solr_search_normalize_options($options) {
-  $normalized = [];
-  foreach ($options as $option) {
-    $normalized[$option] = $option;
-  }
 
-  return $normalized;
-}
+    $normalized = [];
 
-function flat_solr_search_form_islandora_solr_advanced_search_form_alter(&$form, &$form_state, $form_id) {
-
-  $dropdowns = flat_solr_search_get_cmdi_dropdowns();
-  $fields = variable_get('flat_solr_search_fields');
-
-  if (isset($form['terms'])) {
-
-    foreach ($form['terms'] as $key => $field) {
-
-      if (isset($field['field']) && count($field['field']['#options']) > 0 && isset($field['search'])) {
-
-        $chosenField = $field['field']['#default_value'];
-
-        if (!isset($fields[$chosenField]) || (!isset($dropdowns[$fields[$chosenField]]))) {
-          $chosenField = array_keys($field['field']['#options'])[0];
-        }
-
-        if (isset($dropdowns[$fields[$chosenField]])) {
-
-          $form['terms'][$key]['search'] = [
-
-            '#type' => 'select',
-            '#options' => flat_solr_search_normalize_options($dropdowns[$fields[$chosenField]]['options']),
-          ];
-
-          $form['terms'][$key]['field']['#ajax'] = [
-
-            'callback' => 'flat_solr_search_reload_dropdown',
-            'wrapper'  => 'islandora-solr-advanced-terms',
-            'event'    => 'change',
-            'effect'   => 'none',
-          ];
-        }
-      }
+    foreach ($options as $option) {
+        $normalized[$option] = $option;
     }
-  }
-}
 
-function flat_solr_search_reload_dropdown($form, &$form_state) {
-  return $form['terms'];
-}
-
-function flat_solr_search_get_cmdi_dropdowns() {
-
-  module_load_include('inc', 'flat_deposit', 'Helpers/CMDI/FormBuilder/class.FormBuilder');
-
-  $directory = FormBuilder::FORM_TEMPLATES_PATH;
-  $files = scandir($directory);
-  $dropdowns = [];
-
-  foreach ($files as $file) {
-
-    $path = $directory . DIRECTORY_SEPARATOR . $file;
-
-    if (is_file($path) && substr($file, -3) === 'xml') {
-
-      $template = simplexml_load_file($path);
-      $id = (string)$template->data->clarinProfileId;
-
-      foreach ($template->items as $item) {
-          flat_solr_search_get_cmdi_template_dropdowns($item, $id, $dropdowns);
-      }
-    }
-  }
-
-  return $dropdowns;
-}
-
-function flat_solr_search_get_cmdi_template_dropdowns($items, $parentId, &$dropdowns) {
-
-  foreach ($items->item as $item) {
-
-    $id = $parentId . '_' . (string)$item->attributes()['id'];
-    if ((string)$item->type === 'dropdown' && isset($item->options) && count($item->options) > 0) {
-
-        $dropdowns[$id] = [
-
-          'title' => (string)$item->title,
-          'description' => (string)$item->description,
-          'options' => flat_solr_search_get_cmdi_template_dropdown_options($item),
-        ];
-
-    } elseif (isset($item->item)) {
-        flat_solr_search_get_cmdi_template_dropdowns($item, $id, $dropdowns);
-      }
-  }
-
-  return $dropdowns;
-}
-
-function flat_solr_search_get_cmdi_template_dropdown_options($dropdown) {
-
-  $options = [];
-  foreach ($dropdown->options->option as $option) {
-      $options[] = (string)$option;
-  }
-
-  return $options;
+    return $normalized;
 }
 
 /**
+ * Altering islandora solr advanced search form
+ * to override it and make it a dropdown
+ *
+ * @param array $form
+ * @param array $form_state
+ *
+ * @return void
+ */
+function flat_solr_search_form_islandora_solr_advanced_search_form_alter(&$form, &$form_state, $form_id) {
+
+    if (isset($form['terms'])) {
+
+        $fields = variable_get('flat_solr_search_fields');
+
+        foreach ($form['terms'] as $key => $field) {
+
+            // checking whether chosen field is a search field
+            // and has options
+            if (isset($field['search']) && isset($field['field']) && count($field['field']['#options']) > 0) {
+
+                // adding ajax change event
+                $form['terms'][$key]['field']['#ajax'] = [
+
+                    'callback' => 'flat_solr_search_reload_dropdown',
+                    'wrapper'  => 'islandora-solr-advanced-terms',
+                    'event'    => 'change',
+                    'effect'   => 'none',
+                ];
+
+                if (isset($form_state['previous_search_field'])) {
+
+                    // previous search field found, restoring textfield
+                    // this is to enable switching from dropdown to textfield and back
+                    $form['terms'][$key]['search']['#type'] = 'textfield';
+                    $form['terms'][$key]['search']['#size'] = $form_state['previous_search_field']['size'];
+                }
+
+                // chosen solr field
+                $chosenField = $field['field']['#default_value'];
+
+                if (!array_key_exists($chosenField, $field['field']['#options'])) {
+
+                    // bug in islandora sets default value to dc.title for some reason
+                    // resetting it to the first in the list
+                    $chosenField = array_keys($field['field']['#options'])[0];
+                }
+
+                if (!isset($fields[$chosenField])) {
+
+                    // solr field is not set in admin configuration
+                    // reset it back to a normal text field
+                    unset($form['terms'][$key]['search']['#options']);
+                    unset($form_state['previous_search_field']);
+
+                    continue;
+                }
+
+                // field found, saving previous search field state
+                $form_state['previous_search_field'] = [
+                    'size' => $form['terms'][$key]['search']['#size'],
+                ];
+
+                // removing size
+                unset($form['terms'][$key]['search']['#size']);
+
+                // and transforming to dropdown
+                $form['terms'][$key]['search']['#type']    = 'select';
+                $form['terms'][$key]['search']['#options'] = flat_solr_search_normalize_options($fields[$chosenField]['options']);
+            }
+        }
+    }
+}
+
+/**
+ * When advanced_search solr field value has changed,
+ * ajax will return the terms
+ *
+ * @param array $form
+ * @param array $form_state
+ *
+ * @return array
+ */
+function flat_solr_search_reload_dropdown(&$form, &$form_state) {
+    return $form['terms'];
+}
+
+/**
+ * Getting cmdi dropdowns
+ *
+ * @return array
+ */
+function flat_solr_search_get_cmdi_dropdowns() {
+
+    module_load_include('inc', 'flat_deposit', 'Helpers/CMDI/FormBuilder/class.FormBuilder');
+
+    $directory = FormBuilder::FORM_TEMPLATES_PATH;
+    $files     = scandir($directory);
+    $dropdowns = [];
+
+    foreach ($files as $file) {
+
+        $path = $directory . DIRECTORY_SEPARATOR . $file;
+
+        if (!is_file($path)) {
+            continue;
+        }
+
+        $pathinfo = pathinfo($path);
+
+        if ($pathinfo['extension'] !== 'xml') {
+            continue;
+        }
+
+        $template = simplexml_load_file($path);
+        $id       = (string)$template->data->clarinProfileId;
+
+        foreach ($template->items as $item) {
+            flat_solr_search_get_cmdi_template_dropdowns($pathinfo['filename'], $item, $id, $dropdowns);
+        }
+    }
+
+    return $dropdowns;
+}
+
+/**
+ * Recursively walking through xml to get all the dropdowns.
+ * To keep $dropdowns flat, we pass it by reference.
+ *
+ * @param string           $title
+ * @param SimpleXMLElement $items
+ * @param string           $parentId
+ * @param array            $dropdowns
+ *
+ * @return array
+ */
+function flat_solr_search_get_cmdi_template_dropdowns($title, $items, $parentId, &$dropdowns) {
+
+    foreach ($items->item as $item) {
+
+        $id = $parentId . '_' . (string)$item->attributes()['id'];
+
+        if ((string)$item->type === 'dropdown' && isset($item->options) && count($item->options) > 0) {
+
+            $dropdowns[$id] = [
+
+                'title'       => $title . ' - ' . (string)$item->title,
+                'description' => (string)$item->description,
+                'options'     => flat_solr_search_get_cmdi_template_dropdown_options($item),
+            ];
+
+        } elseif (isset($item->item)) {
+
+            $newTitle = $title;
+
+            if (isset($item->container)) {
+                $newTitle .= ' - ' . $item->container;
+            }
+
+            flat_solr_search_get_cmdi_template_dropdowns($newTitle, $item, $id, $dropdowns);
+        }
+    }
+
+    return $dropdowns;
+}
+
+/**
+ * Getting dropdown options
+ *
+ * @param SimpleXMLElement $dropdown
+ *
+ * @return array
+ */
+function flat_solr_search_get_cmdi_template_dropdown_options($dropdown) {
+
+    $options = [];
+    foreach ($dropdown->options->option as $option) {
+        $options[] = (string)$option;
+    }
+
+    return $options;
+}
+
+/**
+ * Setting dropdown menu for admin configuration
+ *
  * @return array
  */
 function flat_solr_search_menu() {
 
-  $items = [];
+    $items = [];
 
-  $items['admin/config/flat_deposit/flat_solr_search'] = [
+    $items['admin/config/flat_deposit/flat_solr_search'] = [
 
-      'title'            => 'Configure FLAT Solr Search',
-      'type'             => MENU_LOCAL_TASK,
-      'page callback'    => 'drupal_get_form',
-      'page arguments'   => ['flat_solr_search_admin_form'],
-      'access callback'  => true,//'flat_solr_search_menu_access',
-      'file'             => 'includes/admin.inc',
-  ];
+        'title'           => 'Configure FLAT Solr Search',
+        'type'            => MENU_LOCAL_TASK,
+        'page callback'   => 'drupal_get_form',
+        'page arguments'  => ['flat_solr_search_admin_form'],
+        'access callback' => true,//'flat_solr_search_menu_access',
+        'file'            => 'includes/admin.inc',
+    ];
 
-  return $items;
+    return $items;
 }
 
 /**
+ * Checking whether user has access
+ *
  * @return boolean
  */
 function flat_solr_search_menu_access() {
-  return true === user_access('manage flat solr search menu');
+    return true === user_access('manage flat solr search menu');
 }
